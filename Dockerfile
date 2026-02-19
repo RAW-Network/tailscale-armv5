@@ -72,5 +72,7 @@ COPY --from=build-env /go/bin/linux_arm/tailscaled /usr/local/bin/tailscaled
 COPY sshd_config /etc/ssh/
 COPY tailscale.sh /usr/local/bin
 
+RUN chmod +x /usr/local/bin/tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscale.sh
+
 EXPOSE 22
 CMD ["/usr/local/bin/tailscale.sh"]
