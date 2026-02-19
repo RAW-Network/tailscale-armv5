@@ -1,0 +1,94 @@
+name: Build Tailscale ARMv5
+
+on:
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+    inputs:
+      tailscale_version:
+        description: 'Tailscale Version (leave empty for latest)'
+        required: false
+        default: ''
+
+env:
+  IMAGE_NAME: ghcr.io/raw-network/tailscale-armv5
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest Tailscale version
+        id: tailscale_version
+        run: |
+          if [ -n "${{ github.event.inputs.tailscale_version }}" ]; then
+            VERSION="${{ github.event.inputs.tailscale_version }}"
+          else
+            VERSION=$(curl -s https://api.github.com/repos/tailscale/tailscale/releases/latest | jq -r '.tag_name' | sed 's/^v//')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Using Tailscale version: $VERSION"
+
+      - name: Clone Tailscale source
+        run: |
+          git -c advice.detachedHead=false clone \
+            https://github.com/tailscale/tailscale.git \
+            --branch v${{ steps.tailscale_version.outputs.version }} \
+            --depth 1
+
+      - name: Get Tailscale build variables
+        id: shellvars
+        run: |
+          cd tailscale
+          TS_USE_TOOLCHAIN="Y" eval $(./build_dist.sh shellvars)
+          echo "version_long=$VERSION_LONG" >> $GITHUB_OUTPUT
+          echo "version_short=$VERSION_SHORT" >> $GITHUB_OUTPUT
+          echo "version_git_hash=$VERSION_GIT_HASH" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: false
+          platforms: linux/arm/v5
+          build-args: |
+            VERSION_LONG=${{ steps.shellvars.outputs.version_long }}
+            VERSION_SHORT=${{ steps.shellvars.outputs.version_short }}
+            VERSION_GIT_HASH=${{ steps.shellvars.outputs.version_git_hash }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ steps.tailscale_version.outputs.version }}
+
+      - name: Export image as tar
+        run: |
+          docker pull --platform linux/arm/v5 ${{ env.IMAGE_NAME }}:${{ steps.tailscale_version.outputs.version }}
+          docker save ${{ env.IMAGE_NAME }}:${{ steps.tailscale_version.outputs.version }} -o tailscale.tar
+
+      - name: Upload tar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailscale-armv5-${{ steps.tailscale_version.outputs.version }}
+          path: tailscale.tar
+          retention-days: 90
